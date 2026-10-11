@@ -1,7 +1,12 @@
 /* ------------------------------ */
-//              COG 1
+//              COG 1.3
 //  @github.com/itskesfet
 /* ------------------------------ */
+
+//LIN COMPILER
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 
 #ifndef COG_H
 #define COG_H
@@ -15,7 +20,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <errno.h>
 
+#include <stdlib.h> 
+#include <stdint.h>   
+#include <string.h>  
 /* ------------------------------ */
 // CLOG provides the library basic logging system.
 #ifndef CLOG_H
@@ -28,8 +37,8 @@ typedef enum {
 	LOG_ERROR
 } LOG_LEVEL;
 
-//			  LOG  
-#define LOG_LEN 100
+//	LOG  
+#define LOG_LEN 1024
 
 //  INTERFACE
 void cog(LOG_LEVEL level, const char *fmt, ...)
@@ -80,6 +89,9 @@ static void clog_terminal_handler(
 //----
 void clog_set_level(LOG_LEVEL level)
 {
+	if(level < LOG_DEBUG || level > LOG_ERROR){
+		return;
+	}
 	clog_level = level;
 }
 
@@ -135,7 +147,10 @@ static void clog_terminal_handler(
 	if (clog_timestamp) {
 		time_t now = time(NULL);
 		struct tm *tm_now = localtime(&now);
-
+		if (tm_now == NULL) {
+			    fprintf(stderr, "%s %s\n", log_level(level), message);
+			    return;
+			}
 		fprintf(stderr,
 			"[%02d:%02d:%02d] %s %s\n",
 			tm_now->tm_hour,
@@ -222,10 +237,12 @@ static int construct_program(Build *build)
         _exit(127);
     }
 	int status;
-
-	if (waitpid(pid, &status, 0) < 0)
+	
+	while (waitpid(pid, &status, 0) < 0) {
+	    if (errno == EINTR)
+	        continue;
 	    return -1;
-
+	}
 	if (WIFEXITED(status))
 	    return WEXITSTATUS(status);
 
@@ -243,9 +260,11 @@ int build_program(const char **arg)
     Build build = build_struct(arg[0]);
     build.cmd.cmd = arg;
 
-    for (size_t i = 0; arg[i] != NULL; ++i)
+    size_t i = 0;
+    for (i   ; arg[i] != NULL; ++i){
         build.cmd.count++;
-
+    }
+	
     return construct_program(&build);
 }
 
@@ -254,5 +273,121 @@ int build_program(const char **arg)
 
 
 /* ------------------------------ */
+
+
+#ifndef CWATCH_H
+#define CWATCH_H
+
+typedef struct {
+    struct timespec time;
+    char      *name;
+}Time_Event;
+
+typedef struct {
+    Time_Event *ev;
+    size_t      count;
+    size_t      capacity;
+}TimeLog;
+
+
+bool log_init(TimeLog *log);
+bool log_record(TimeLog *log, const char *name);
+void log_reset(TimeLog *log);
+void log_free(TimeLog *log);
+void log_time(const TimeLog *log);
+
+#ifdef CWATCH_IMPLEMENTATION
+    
+bool log_init(TimeLog* log){
+    if(log == NULL)
+        return false;
+
+    log->ev =       NULL;
+    log->count =    0;
+    log->capacity = 0;
+
+    return true;
+}
+
+bool log_record(TimeLog *log, const char *name)
+{
+
+    if (log == NULL || name == NULL)
+        return false;
+
+    if (log->count == log->capacity) {
+        if(log->capacity > SIZE_MAX / 2)
+            return false;
+
+        size_t new_capacity = log->capacity ? log->capacity * 2 : 4;
+        
+        if (new_capacity > SIZE_MAX / sizeof(*log->ev))
+            return false;
+        
+        Time_Event *tmp = realloc(log->ev, new_capacity * sizeof(*log->ev));
+        if (tmp == NULL)
+            return false;
+
+        log->ev = tmp;
+        log->capacity = new_capacity;
+    }
+
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return false;
+    
+    char *copy = malloc(strlen(name) + 1);
+    if (copy == NULL)
+        return false;
+
+    strcpy(copy, name);
+    log->ev[log->count++] = (Time_Event){
+        .time = now,
+        .name = copy
+    };
+
+    return true;
+}
+
+void log_time(const TimeLog *log)
+{
+    if (log == NULL)
+        return;
+
+    for (size_t i = 0; i < log->count; i++) {
+        const Time_Event *ev = &log->ev[i];
+
+        printf("[%zu] %-20s %lld.%09ld\n", i, ev->name, 
+                (long long)ev->time.tv_sec,
+                ev->time.tv_nsec);
+    }
+}
+
+void log_reset(TimeLog *log)
+{
+    if (log == NULL)
+        return;
+    
+    for (size_t i = 0; i < log->count; i++)
+        free((char *)log->ev[i].name);
+
+    log->count = 0;
+}
+
+void log_free(TimeLog *log)
+{
+    if (log == NULL)
+        return;
+    for (size_t i = 0; i < log->count; i++)
+        free((char *)log->ev[i].name);
+
+    free(log->ev);
+    log->ev = NULL;
+    log->count = 0;
+    log->capacity = 0;
+}
+
+#endif
+#endif
 
 #endif
